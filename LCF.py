@@ -23,7 +23,7 @@ DATA_DIR = 'mushroom_data'
 API_RATE_LIMIT = 0.5  # seconds between requests
 API_BASE_URL = 'https://api.inaturalist.org/v1'
 PLACE_IDS = [10]  # Oregon
-DEFAULT_MAP_CENTER = [43.8041, -120.5542]  # Oregon/Washington center
+DEFAULT_MAP_CENTER = [44.1, -120.5]  # Oregon/Washington center
 REPORTS_DIR = 'reports'
 QUALITY_GRADES = ["casual", "needs_id", "research"]
 
@@ -32,6 +32,7 @@ console = Console()
 
 class MushroomObserver:
     def __init__(self):
+        """Initialize the MushroomObserver class."""
         self.setup_logging()
         self.setup_directories()
         self.mushrooms = self.load_mushrooms()
@@ -86,22 +87,23 @@ class MushroomObserver:
         except Exception as e:
             self.logger.error(f"Error saving mushrooms: {e}")
             return False
+
     def view_mushrooms(self):
-            """Display list of tracked mushrooms."""
-            console.clear()
-            if not self.mushrooms:
-                rprint("[yellow]No mushrooms in the list![/yellow]")
-            else:
-                table = Table(show_header=True, header_style="bold magenta")
-                table.add_column("Name", style="cyan")
-                table.add_column("Taxon ID", style="green")
-                
-                for name, taxon_id in self.mushrooms.items():
-                    table.add_row(name, str(taxon_id))
-                
-                console.print(table)
+        """Display list of tracked mushrooms."""
+        console.clear()
+        if not self.mushrooms:
+            rprint("[yellow]No mushrooms in the list![/yellow]")
+        else:
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Name", style="cyan")
+            table.add_column("Taxon ID", style="green")
             
-            input("\nPress Enter to continue...")
+            for name, taxon_id in self.mushrooms.items():
+                table.add_row(name, str(taxon_id))
+            
+            console.print(table)
+        
+        input("\nPress Enter to continue...")
 
     def add_mushroom(self):
         """Add a new mushroom to track."""
@@ -120,7 +122,6 @@ class MushroomObserver:
             if self.save_mushrooms():
                 rprint("[green]Mushroom added successfully![/green]")
                 
-                # Add this section to automatically fetch data
                 rprint("[yellow]\nFetching initial observation data...[/yellow]")
                 data = self.fetch_observations(taxon_id, name)
                 if not data.empty:
@@ -185,7 +186,6 @@ class MushroomObserver:
                 old_name = list(self.mushrooms.keys())[choice-1]
                 old_taxon_id = self.mushrooms[old_name]
                 
-                # Get new values
                 new_name = Prompt.ask("Enter new name (or press Enter to keep current)", default=old_name)
                 new_taxon_str = Prompt.ask(
                     "Enter new taxon ID (or press Enter to keep current)",
@@ -195,10 +195,8 @@ class MushroomObserver:
                 try:
                     new_taxon_id = int(new_taxon_str)
                     
-                    # Handle name change
                     if new_name != old_name:
                         del self.mushrooms[old_name]
-                        # Rename cache file if it exists
                         old_cache = os.path.join(DATA_DIR, f'taxon_{old_taxon_id}.json')
                         if os.path.exists(old_cache):
                             os.rename(old_cache, os.path.join(DATA_DIR, f'taxon_{new_taxon_id}.json'))
@@ -217,105 +215,189 @@ class MushroomObserver:
             rprint("[red]Invalid input! Please enter a number.[/red]")
         
         input("\nPress Enter to continue...")
-        
+
     def validate_observation(self, observation):
-            """Validate individual observation data."""
-            try:
-                if not all(field in observation for field in ['id', 'observed_on', 'geojson']):
-                    return False
-                
-                if not observation['observed_on'] or not observation['geojson']:
-                    return False
-                
-                coords = observation['geojson'].get('coordinates', [])
-                if len(coords) != 2:
-                    return False
-                    
-                lon, lat = coords
-                if not (-180 <= lon <= 180 and -90 <= lat <= 90):
-                    return False
-                
-                return True
-            except Exception as e:
-                self.logger.error(f"Error validating observation: {e}")
+        """Validate individual observation data."""
+        try:
+            if not all(field in observation for field in ['id', 'observed_on', 'geojson']):
                 return False
+            
+            if not observation['observed_on'] or not observation['geojson']:
+                return False
+            
+            coords = observation['geojson'].get('coordinates', [])
+            if len(coords) != 2:
+                return False
+                
+            lon, lat = coords
+            if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+                return False
+            
+            return True
+        except Exception as e:
+            self.logger.error(f"Error validating observation: {e}")
+            return False
 
     def fetch_observations(self, taxon_id, mushroom_name=None):
         """Fetch observation data from iNaturalist API."""
         all_data = []
         
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console
-        ) as progress:
-            task = progress.add_task(f"Fetching data for {mushroom_name}...", total=None)
-            
-            # Check cache first
-            cached_data = self.load_cached_data(taxon_id)
-            if cached_data:
-                progress.update(task, description=f"Loaded cached data for {mushroom_name}")
-                return pd.DataFrame(cached_data)
-
-            headers = {
-                "User-Agent": "MuchroomObserver/1.0",
-                "Accept": "application/json"
-            }
-
-            try:
-                for place_id in PLACE_IDS:
-                    for quality_grade in QUALITY_GRADES:
-                        page = 1
-                        while True:
-                            try:
-                                url = f"{API_BASE_URL}/observations"
-                                params = {
-                                    "taxon_id": taxon_id,
-                                    "place_id": place_id,
-                                    "per_page": 200,
-                                    "page": page,
-                                    "quality_grade": quality_grade,
-                                    "photos": "true",
-                                    "geo": "true"
-                                }
-                                
-                                response = requests.get(url, params=params, headers=headers)
-                                response.raise_for_status()
-                                data = response.json()
-                                
-                                results = data.get('results', [])
-                                if not results:
-                                    break
-                                
-                                # Add quality_grade to each observation
-                                for result in results:
-                                    result['quality_grade'] = quality_grade
-                                
-                                valid_results = [obs for obs in results if self.validate_observation(obs)]
-                                all_data.extend(valid_results)
-                                
-                                progress.update(task, 
-                                    description=f"Loaded {len(all_data)} observations for {mushroom_name} ({quality_grade})")
-                                
-                                if len(results) < 200:
-                                    break
-                                
-                                page += 1
-                                time.sleep(API_RATE_LIMIT)
-                                
-                            except requests.RequestException as e:
-                                self.logger.error(f"Error fetching page {page}: {e}")
-                                break
-
-                # Save to cache if we got any data
-                if all_data:
-                    self.save_cached_data(taxon_id, all_data)
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                task = progress.add_task(f"Fetching data for {mushroom_name}...", total=None)
                 
-                return pd.DataFrame(all_data)
+                # Check cache first
+                cached_data = self.load_cached_data(taxon_id)
+                if cached_data:
+                    progress.update(task, description=f"Loaded cached data for {mushroom_name}")
+                    return pd.DataFrame(cached_data)
 
-            except Exception as e:
-                self.logger.error(f"Error fetching observations: {e}")
-                return pd.DataFrame()
+                headers = {
+                    "User-Agent": "MushroomObserver/1.0",  # Fixed typo in User-Agent
+                    "Accept": "application/json"
+                }
+
+                try:
+                    for place_id in PLACE_IDS:
+                        for quality_grade in QUALITY_GRADES:
+                            page = 1
+                            while True:
+                                try:
+                                    url = f"{API_BASE_URL}/observations"
+                                    params = {
+                                        "taxon_id": taxon_id,
+                                        "place_id": place_id,
+                                        "per_page": 200,
+                                        "page": page,
+                                        "quality_grade": quality_grade,
+                                        "photos": "true",
+                                        "geo": "true"
+                                    }
+                                    
+                                    response = requests.get(url, params=params, headers=headers, timeout=30)  # Added timeout
+                                    response.raise_for_status()
+                                    data = response.json()
+                                    
+                                    results = data.get('results', [])
+                                    if not results:
+                                        break
+                                    
+                                    for result in results:
+                                        result['quality_grade'] = quality_grade
+                                    
+                                    valid_results = [obs for obs in results if self.validate_observation(obs)]
+                                    all_data.extend(valid_results)
+                                    
+                                    progress.update(task, 
+                                        description=f"Loaded {len(all_data)} observations for {mushroom_name} ({quality_grade})")
+                                    
+                                    if len(results) < 200:
+                                        break
+                                    
+                                    page += 1
+                                    time.sleep(API_RATE_LIMIT)
+                                    
+                                except requests.RequestException as e:
+                                    self.logger.error(f"Error fetching page {page}: {e}")
+                                    break
+                                except KeyboardInterrupt:
+                                    rprint("\n[yellow]Data fetch interrupted by user[/yellow]")
+                                    break
+
+                    if all_data:
+                        self.save_cached_data(taxon_id, all_data)
+                    
+                    return pd.DataFrame(all_data)
+
+                except Exception as e:
+                    self.logger.error(f"Error fetching observations: {e}")
+                    return pd.DataFrame()
+
+        except KeyboardInterrupt:
+            rprint("\n[yellow]Operation cancelled by user[/yellow]")
+            return pd.DataFrame(all_data) if all_data else pd.DataFrame()
+        except Exception as e:
+            self.logger.error(f"Unexpected error in fetch_observations: {e}")
+            return pd.DataFrame()
+
+    def fetch_observations_since(self, taxon_id, mushroom_name, since_date=None):
+        """Fetch only new observations since the given date."""
+        all_data = []
+        headers = {
+            "User-Agent": "MushroomObserver/1.0",  # Fixed typo
+            "Accept": "application/json"
+        }
+
+        try:
+            # Convert since_date to proper format if it exists
+            if since_date:
+                # Ensure we're using a datetime object
+                if isinstance(since_date, str):
+                    since_date = pd.to_datetime(since_date)
+                # Format for iNaturalist API
+                since_date = since_date.strftime('%Y-%m-%d')
+                
+            for place_id in PLACE_IDS:
+                for quality_grade in QUALITY_GRADES:
+                    page = 1
+                    while True:
+                        try:
+                            url = f"{API_BASE_URL}/observations"
+                            params = {
+                                "taxon_id": taxon_id,
+                                "place_id": place_id,
+                                "per_page": 200,
+                                "page": page,
+                                "quality_grade": quality_grade,
+                                "photos": "true",
+                                "geo": "true",
+                                "order_by": "observed_on",
+                                "order": "desc"  # Get newest first
+                            }
+                            
+                            if since_date:
+                                params["d1"] = since_date  # Date must be in YYYY-MM-DD format
+                                self.logger.info(f"Fetching observations since {since_date}")
+
+                            response = requests.get(url, params=params, headers=headers, timeout=30)
+                            response.raise_for_status()
+                            data = response.json()
+                            
+                            results = data.get('results', [])
+                            if not results:
+                                break
+                            
+                            # Add quality grade to each observation
+                            for result in results:
+                                result['quality_grade'] = quality_grade
+                                
+                            valid_results = [obs for obs in results if self.validate_observation(obs)]
+                            
+                            # Log the number of new observations found
+                            if valid_results:
+                                self.logger.info(f"Found {len(valid_results)} new observations for {mushroom_name}")
+                            
+                            all_data.extend(valid_results)
+                            
+                            if len(results) < 200:
+                                break
+                            
+                            page += 1
+                            time.sleep(API_RATE_LIMIT)
+                            
+                        except requests.RequestException as e:
+                            self.logger.error(f"Error fetching page {page}: {e}")
+                            break
+
+            return all_data
+
+        except Exception as e:
+            self.logger.error(f"Error fetching new observations: {e}")
+            return []
 
     def load_cached_data(self, taxon_id):
         """Load cached observation data."""
@@ -330,6 +412,85 @@ class MushroomObserver:
         cache_file = os.path.join(DATA_DIR, f'taxon_{taxon_id}.json')
         with open(cache_file, 'w') as f:
             json.dump(data, f)
+
+    def calculate_monthly_totals(self, data):
+        """Calculate monthly observation totals with historical breakdowns."""
+        if 'observed_on' not in data.columns or data.empty:
+            return pd.DataFrame(), pd.DataFrame()
+        
+        data['observed_on'] = pd.to_datetime(data['observed_on'])
+        data['year'] = data['observed_on'].dt.year
+        
+        monthly_counts = data.groupby([
+            data['observed_on'].dt.month,
+            'quality_grade'
+        ]).size().unstack(fill_value=0)
+        
+        historical_counts = data.groupby([
+            data['observed_on'].dt.year,
+            data['observed_on'].dt.month,
+            'quality_grade'
+        ]).size().unstack(fill_value=0)
+        
+        monthly_counts['Total'] = monthly_counts.sum(axis=1)
+        historical_counts['Total'] = historical_counts.sum(axis=1)
+        
+        month_names = {
+            1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'May', 6: 'Jun',
+            7: 'Jul', 8: 'Aug', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec'
+        }
+        
+        monthly_counts.index = monthly_counts.index.map(month_names)
+        historical_counts.index = historical_counts.index.map(
+            lambda x: f"{month_names[x[1]]} {x[0]}"
+        )
+        
+        return monthly_counts, historical_counts
+
+    def get_seasonal_predictions(self, all_mushroom_data):
+        """Calculate seasonal predictions for mushroom occurrence."""
+        current_date = datetime.datetime.now()
+        current_month = current_date.month
+        last_month = (current_month - 1) if current_month > 1 else 12
+        next_month = (current_month + 1) if current_month < 12 else 1
+        
+        predictions = {}
+        
+        for name, data in all_mushroom_data.items():
+            if data.empty or 'observed_on' not in data.columns:
+                continue
+                
+            data['observed_on'] = pd.to_datetime(data['observed_on'])
+            data['month'] = data['observed_on'].dt.month
+            data['year'] = data['observed_on'].dt.year
+            
+            # Calculate monthly averages
+            monthly_counts = data.groupby(['month']).size()
+            yearly_counts = data.groupby(['year', 'month']).size()
+            yearly_averages = yearly_counts.groupby('month').mean()
+            
+            # Calculate totals by month
+            monthly_totals = monthly_counts.to_dict()
+            
+            predictions[name] = {
+                'last_month': {
+                    'month': last_month,
+                    'avg': yearly_averages.get(last_month, 0),
+                    'total': int(monthly_totals.get(last_month, 0))
+                },
+                'current_month': {
+                    'month': current_month,
+                    'avg': yearly_averages.get(current_month, 0),
+                    'total': int(monthly_totals.get(current_month, 0))
+                },
+                'next_month': {
+                    'month': next_month,
+                    'avg': yearly_averages.get(next_month, 0),
+                    'total': int(monthly_totals.get(next_month, 0))
+                }
+            }
+        
+        return predictions
 
     def manual_update_mushroom(self):
         """Manually update data for a specific mushroom."""
@@ -358,7 +519,6 @@ class MushroomObserver:
                 ) as progress:
                     task = progress.add_task(f"Fetching new data for {name}...")
                     
-                    # Force new data fetch by temporarily renaming cache file
                     cache_file = os.path.join(DATA_DIR, f'taxon_{taxon_id}.json')
                     backup_file = os.path.join(DATA_DIR, f'taxon_{taxon_id}.json.bak')
                     
@@ -370,7 +530,6 @@ class MushroomObserver:
                         if not data.empty:
                             rprint(f"[green]Successfully updated {name} with {len(data)} observations[/green]")
                             
-                            # Remove backup if successful
                             if os.path.exists(backup_file):
                                 os.remove(backup_file)
                         else:
@@ -388,162 +547,54 @@ class MushroomObserver:
         
         input("\nPress Enter to continue...")
 
-    def fetch_observations_since(self, taxon_id, mushroom_name, since_date=None):
-        """Fetch only new observations since the given date."""
-        all_data = []
-        headers = {
-            "User-Agent": "MuchroomObserver/1.0",
-            "Accept": "application/json"
-        }
+    def generate_mushroom_report(self):
+        """Generate report for a single mushroom."""
+        console.clear()
+        if not self.mushrooms:
+            rprint("[yellow]No mushrooms to generate report for![/yellow]")
+            input("\nPress Enter to continue...")
+            return
 
+        rprint("[bold]Generate Mushroom Report[/bold]\n")
+        for i, name in enumerate(self.mushrooms.keys(), 1):
+            rprint(f"{i}. {name}")
+        
         try:
-            for place_id in PLACE_IDS:
-                for quality_grade in QUALITY_GRADES:
-                    page = 1
-                    while True:
-                        try:
-                            url = f"{API_BASE_URL}/observations"
-                            params = {
-                                "taxon_id": taxon_id,
-                                "place_id": place_id,
-                                "per_page": 200,
-                                "page": page,
-                                "quality_grade": quality_grade,
-                                "photos": "true",
-                                "geo": "true",
-                                "order_by": "observed_on",
-                                "order": "desc"  # Get newest first
-                            }
-                            
-                            # Add date filter if we have a last observation date
-                            if since_date:
-                                params["d1"] = since_date  # Only get observations after this date
-
-                            response = requests.get(url, params=params, headers=headers)
-                            response.raise_for_status()
-                            data = response.json()
-                            
-                            results = data.get('results', [])
-                            if not results:
-                                break
-                            
-                            # Add quality_grade to each observation
-                            for result in results:
-                                result['quality_grade'] = quality_grade
-                                
-                            valid_results = [obs for obs in results if self.validate_observation(obs)]
-                            all_data.extend(valid_results)
-                            
-                            if len(results) < 200:
-                                break
-                            
-                            page += 1
-                            time.sleep(API_RATE_LIMIT)
-                            
-                        except requests.RequestException as e:
-                            self.logger.error(f"Error fetching page {page}: {e}")
-                            break
-
-            return all_data
-
-        except Exception as e:
-            self.logger.error(f"Error fetching new observations: {e}")
-            return []
-            
-    def calculate_monthly_totals(self, data):
-            """Calculate monthly observation totals with historical breakdowns."""
-            if 'observed_on' not in data.columns or data.empty:
-                return pd.DataFrame(), pd.DataFrame()
-            
-            # Convert to datetime if not already
-            data['observed_on'] = pd.to_datetime(data['observed_on'])
-            
-            # Add year column
-            data['year'] = data['observed_on'].dt.year
-            
-            # Calculate all-time monthly totals
-            monthly_counts = data.groupby([
-                data['observed_on'].dt.month, 
-                'quality_grade'
-            ]).size().unstack(fill_value=0)
-            
-            # Calculate historical monthly totals by year
-            historical_counts = data.groupby([
-                data['observed_on'].dt.year,
-                data['observed_on'].dt.month,
-                'quality_grade'
-            ]).size().unstack(fill_value=0)
-            
-            # Add total columns
-            monthly_counts['Total'] = monthly_counts.sum(axis=1)
-            historical_counts['Total'] = historical_counts.sum(axis=1)
-            
-            # Map month numbers to names
-            month_names = {
-                1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'May', 6: 'Jun',
-                7: 'Jul', 8: 'Aug', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec'
-            }
-            
-            monthly_counts.index = monthly_counts.index.map(month_names)
-            historical_counts.index = historical_counts.index.map(
-                lambda x: f"{month_names[x[1]]} {x[0]}"
-            )
-            
-            return monthly_counts, historical_counts
-
-    def get_seasonal_predictions(self, all_mushroom_data):
-        """Calculate seasonal predictions for mushroom occurrence."""
-        current_date = datetime.datetime.now()
-        current_month = current_date.month
-        last_month = (current_month - 1) if current_month > 1 else 12
-        next_month = (current_month + 1) if current_month < 12 else 1
-        
-        predictions = {}
-        
-        for name, data in all_mushroom_data.items():
-            if data.empty or 'observed_on' not in data.columns:
-                continue
+            choice = int(Prompt.ask("\nEnter number to generate report (0 to cancel)"))
+            if choice == 0:
+                return
+            if 1 <= choice <= len(self.mushrooms):
+                name = list(self.mushrooms.keys())[choice-1]
+                taxon_id = self.mushrooms[name]
                 
-            data['observed_on'] = pd.to_datetime(data['observed_on'])
-            data['month'] = data['observed_on'].dt.month
-            data['year'] = data['observed_on'].dt.year
-            
-            # Calculate monthly averages
-            monthly_counts = data.groupby(['year', 'month']).agg(count=('id', 'count')).reset_index()
-            monthly_avg = monthly_counts.groupby('month')['count'].mean()
-            
-            # Get historical totals for relevant months
-            historical_totals = data.groupby('month').agg(total=('id', 'count'))
-            
-            predictions[name] = {
-                'last_month': {
-                    'month': last_month,
-                    'avg': monthly_avg.get(last_month, 0),
-                    'total': historical_totals.get(last_month, {'total': 0})['total']
-                },
-                'current_month': {
-                    'month': current_month,
-                    'avg': monthly_avg.get(current_month, 0),
-                    'total': historical_totals.get(current_month, {'total': 0})['total']
-                },
-                'next_month': {
-                    'month': next_month,
-                    'avg': monthly_avg.get(next_month, 0),
-                    'total': historical_totals.get(next_month, {'total': 0})['total']
-                }
-            }
+                with Progress(
+                    SpinnerColumn(), 
+                    TextColumn("[progress.description]{task.description}")
+                ) as progress:
+                    task = progress.add_task(f"Generating report for {name}...")
+                    data = self.fetch_observations(taxon_id, name)
+                    if not data.empty:
+                        report_path = self.generate_report(data, name)
+                        rprint(f"[green]Report generated: {report_path}[/green]")
+                    else:
+                        rprint("[red]No data available for this mushroom![/red]")
+            else:
+                rprint("[red]Invalid choice![/red]")
+        except ValueError:
+            rprint("[red]Invalid input! Please enter a number.[/red]")
         
-        return predictions
+        input("\nPress Enter to continue...")
 
     def generate_report(self, data, mushroom_name):
         """Generate HTML report with visualizations."""
-        # Create report directory with timestamp
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         report_dir = os.path.join(REPORTS_DIR, f"{mushroom_name}_{timestamp}")
         os.makedirs(report_dir, exist_ok=True)
 
-        # Generate heatmap
-        m = folium.Map(location=DEFAULT_MAP_CENTER, zoom_start=6)
+        m = folium.Map(location=DEFAULT_MAP_CENTER,
+                    zoom_start=7,
+                    width='100%',
+                    height='100%')
         
         if not data.empty:
             locations = []
@@ -555,13 +606,9 @@ class MushroomObserver:
             if locations:
                 HeatMap(locations).add_to(m)
 
-        # Calculate monthly statistics
         monthly_data, historical_data = self.calculate_monthly_totals(data)
-        
-        # Get seasonal predictions for this mushroom
         predictions = self.get_seasonal_predictions({mushroom_name: data})
         
-        # Generate HTML report
         report_path = os.path.join(report_dir, 'report.html')
         self.create_html_report(
             report_path, 
@@ -575,17 +622,383 @@ class MushroomObserver:
         
         return report_path
 
-    def create_html_report(self, filepath, mushroom_name, heatmap, monthly_data, 
-                          historical_data, seasonal_pred, full_data):
-        """Create enhanced HTML report with monthly totals and predictions."""
-        # Calculate quality grade distribution
-        quality_dist = full_data['quality_grade'].value_counts()
+    def create_consolidated_html_report(self, filepath, all_mushroom_data, consolidated_predictions):
+        """Create consolidated HTML report for all mushrooms."""
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
-        # Create the monthly totals section with grand totals
+        all_stats = {}
+        overall_summary = {
+            'total_observations': 0,
+            'most_active_month': None,
+            'most_active_year': None,
+            'quality_distribution': {},
+            'yearly_trends': {}
+        }
+
+        for name, data in all_mushroom_data.items():
+            if not data.empty:
+                # Create heatmap for this mushroom
+                m = folium.Map(location=DEFAULT_MAP_CENTER, 
+                             zoom_start=7,
+                             width='100%',
+                             height='100%')
+                locations = []
+                for _, row in data.iterrows():
+                    if pd.notnull(row['geojson']):
+                        coords = row['geojson']['coordinates']
+                        locations.append([coords[1], coords[0]])  # Folium uses [lat, lon]
+                
+                if locations:
+                    HeatMap(locations).add_to(m)
+                
+                # Convert to datetime for analysis
+                data['observed_on'] = pd.to_datetime(data['observed_on'])
+                
+                # Calculate statistics
+                monthly_data, historical_data = self.calculate_monthly_totals(data)
+                yearly_observations = data.groupby(data['observed_on'].dt.year).size()
+                monthly_breakdown = data.groupby(data['observed_on'].dt.month).size()
+                quality_grades = data['quality_grade'].value_counts()
+                
+                # Calculate year-over-year growth
+                yearly_growth = yearly_observations.pct_change() * 100
+                
+                # Find peak months and years
+                peak_month = monthly_breakdown.idxmax()
+                peak_year = yearly_observations.idxmax()
+                
+                # Calculate relative frequency compared to other mushrooms
+                total_obs = len(data)
+                overall_summary['total_observations'] += total_obs
+                
+                # Update quality grade distribution
+                for grade, count in quality_grades.items():
+                    overall_summary['quality_distribution'][grade] = \
+                        overall_summary['quality_distribution'].get(grade, 0) + count
+                
+                # Track yearly trends
+                for year, count in yearly_observations.items():
+                    overall_summary['yearly_trends'][year] = \
+                        overall_summary['yearly_trends'].get(year, 0) + count
+                
+                all_stats[name] = {
+                    'total_observations': total_obs,
+                    'monthly_data': monthly_data,
+                    'historical_data': historical_data,
+                    'predictions': consolidated_predictions.get(name, {}),
+                    'heatmap': m._repr_html_(),
+                    'peak_month': peak_month,
+                    'peak_year': peak_year,
+                    'yearly_growth': yearly_growth,
+                    'quality_breakdown': quality_grades,
+                    'yearly_observations': yearly_observations
+                }
+
+        # Calculate overall trends
+        overall_summary['most_active_year'] = max(overall_summary['yearly_trends'].items(), 
+                                                key=lambda x: x[1])[0]
+        
+        # Generate HTML content
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Enhanced Mushroom Report</title>
+            <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css">
+            <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+            <style>
+                body {{ padding: 20px; background-color: #f5f5f5; }}
+                .container {{ 
+                    max-width: 1200px; 
+                    background-color: white;
+                    padding: 30px;
+                    border-radius: 10px;
+                    box-shadow: 0 0 20px rgba(0,0,0,0.1);
+                }}
+                h1, h2, h3 {{ 
+                    color: #2c3e50;
+                    margin-bottom: 20px;
+                    padding-bottom: 10px;
+                    border-bottom: 2px solid #eee;
+                }}
+                .mushroom-section {{
+                    margin-bottom: 40px;
+                    padding: 20px;
+                    border: 1px solid #ddd;
+                    border-radius: 5px;
+                    background-color: white;
+                }}
+                .map-container {{ 
+                    height: 600px;
+                    width: 100%;
+                    border: 1px solid #ddd;
+                    border-radius: 5px;
+                    overflow: hidden;
+                    margin: 20px 0;
+                }}
+                .summary-card {{
+                    background-color: #f8f9fa;
+                    padding: 15px;
+                    border-radius: 8px;
+                    margin-bottom: 20px;
+                }}
+                .trend-indicator {{
+                    font-weight: bold;
+                    padding: 2px 6px;
+                    border-radius: 3px;
+                }}
+                .trend-up {{ color: #28a745; }}
+                .trend-down {{ color: #dc3545; }}
+                .leaflet-container {{
+                    height: 100% !important;
+                    width: 100% !important;
+                    position: relative !important;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Consolidated Mushroom Report</h1>
+                <p class="lead">Report generated on: {timestamp}</p>
+                
+                <div class="row mt-4">
+                    <div class="col-12">
+                        <h2>Overall Summary</h2>
+                        <div class="summary-card">
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <h5>Total Observations</h5>
+                                    <p class="h3">{overall_summary['total_observations']:,}</p>
+                                </div>
+                                <div class="col-md-4">
+                                    <h5>Most Active Year</h5>
+                                    <p class="h3">{overall_summary['most_active_year']}</p>
+                                </div>
+                                <div class="col-md-4">
+                                    <h5>Quality Distribution</h5>
+                                    {self._create_quality_distribution_html(overall_summary['quality_distribution'])}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {self._create_mushroom_sections(all_stats)}
+            </div>
+
+            <script>
+                // Force Leaflet maps to update their size
+                setTimeout(function() {{
+                    document.querySelectorAll('.leaflet-container').forEach(function(map) {{
+                        map._leaflet_map && map._leaflet_map.invalidateSize();
+                    }});
+                }}, 100);
+            </script>
+        </body>
+        </html>
+        """
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+
+    def _create_mushroom_sections(self, all_stats):
+        """Create HTML for all mushroom sections."""
+        sections = []
+        for name, stats in all_stats.items():
+            try:
+                yearly_trend = self._create_yearly_trend_chart(stats['yearly_observations'], name)
+            except Exception as e:
+                self.logger.error(f"Error creating trend chart for {name}: {e}")
+                yearly_trend = "<div>Error generating trend chart</div>"
+
+            section = f"""
+                <div class="mushroom-section">
+                    <h2>{name}</h2>
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="summary-card">
+                                <h5>Quick Stats</h5>
+                                <p>Peak Month: {self._get_month_name(stats['peak_month'])}<br>
+                                Peak Year: {stats['peak_year']}<br>
+                                Latest Growth: {stats['yearly_growth'].iloc[-1]:.1f}%</p>
+                            </div>
+                        </div>
+                        <div class="col-md-8">
+                            <div class="summary-card">
+                                <h5>Yearly Trend</h5>
+                                {yearly_trend}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-12">
+                            <h3>Observation Heatmap</h3>
+                            <div class="map-container">
+                                {stats['heatmap']}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-12">
+                            <h3>Monthly Patterns</h3>
+                            <div class="table-responsive">
+                                {stats['monthly_data'].to_html(classes='table table-striped')}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row mt-4">
+                        <div class="col-12">
+                            <h3>Seasonal Predictions</h3>
+                            <div class="card-deck">
+                                {self._create_prediction_cards(stats['predictions'])}
+                            </div>
+                        </div>
+                    </div>
+                </div>"""
+            sections.append(section)
+        
+        return '\n'.join(sections)
+            
+    def _get_month_name(self, month_num):
+        """Convert month number to name."""
+        months = {
+            1: 'January', 2: 'February', 3: 'March',
+            4: 'April', 5: 'May', 6: 'June',
+            7: 'July', 8: 'August', 9: 'September',
+            10: 'October', 11: 'November', 12: 'December'
+        }
+        return months.get(month_num, 'Unknown')            
+
+    def _create_quality_distribution_html(self, distribution):
+        """Create HTML for quality grade distribution."""
+        total = sum(distribution.values())
+        html = '<div class="quality-grades">'
+        for grade, count in distribution.items():
+            percentage = (count / total) * 100
+            html += f'<div>{grade}: {percentage:.1f}%</div>'
+        html += '</div>'
+        return html
+
+    def _create_yearly_trend_chart(self, yearly_data, name):
+        """Create a yearly trend visualization."""
+        # Convert data to lists for JSON serialization
+        years = list(yearly_data.index)
+        counts = list(yearly_data.values)
+        
+        return f"""
+            <div id="trend-chart-{name.replace(' ', '-')}" style="height: 200px;"></div>
+            <script>
+                var chartData = {{
+                    x: {years},
+                    y: {counts},
+                    type: 'scatter',
+                    mode: 'lines+markers',
+                    name: 'Observations'
+                }};
+
+                var chartLayout = {{
+                    margin: {{
+                        t: 20,
+                        r: 20,
+                        b: 40,
+                        l: 40
+                    }},
+                    xaxis: {{
+                        title: 'Year'
+                    }},
+                    yaxis: {{
+                        title: 'Observations'
+                    }}
+                }};
+
+                Plotly.newPlot('trend-chart-{name.replace(' ', '-')}', [chartData], chartLayout);
+            </script>
+        """
+
+    def _create_prediction_cards(self, predictions):
+        """Helper method to create prediction cards HTML."""
+        month_names = {
+            1: 'January', 2: 'February', 3: 'March', 4: 'April', 
+            5: 'May', 6: 'June', 7: 'July', 8: 'August',
+            9: 'September', 10: 'October', 11: 'November', 12: 'December'
+        }
+        
+        cards_html = ""
+        for period in ['last_month', 'current_month', 'next_month']:
+            if period in predictions:
+                pred = predictions[period]
+                month_num = pred.get('month', 1)
+                month_name = month_names.get(month_num, 'Unknown')
+                
+                # Get raw values directly
+                total = pred.get('total', 0)
+                avg = pred.get('avg', 0)
+                
+                cards_html += f"""
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title">{month_name}</h5>
+                            <p class="card-text">
+                                Historical Average: {avg:.1f}<br>
+                                All-time Total: {total:,}
+                            </p>
+                        </div>
+                    </div>"""
+        
+        return cards_html
+
+    def generate_consolidated_report(self):
+        """Generate a consolidated report for all mushrooms."""
+        console.clear()
+        if not self.mushrooms:
+            rprint("[yellow]No mushrooms to generate report for![/yellow]")
+            input("\nPress Enter to continue...")
+            return
+
+        rprint("[bold]Generating Consolidated Report[/bold]\n")
+        
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        report_dir = os.path.join(REPORTS_DIR, f"consolidated_{timestamp}")
+        os.makedirs(report_dir, exist_ok=True)
+
+        all_mushroom_data = {}
+        consolidated_predictions = {}
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}")
+        ) as progress:
+            task = progress.add_task("Collecting mushroom data...", total=len(self.mushrooms))
+            
+            for name, taxon_id in self.mushrooms.items():
+                progress.update(task, description=f"Loading data for {name}")
+                data = self.fetch_observations(taxon_id, name)
+                if not data.empty:
+                    all_mushroom_data[name] = data
+                progress.advance(task)
+
+            consolidated_predictions = self.get_seasonal_predictions(all_mushroom_data)
+
+        if not all_mushroom_data:
+            rprint("[red]No data available for any mushrooms![/red]")
+            input("\nPress Enter to continue...")
+            return
+
+        report_path = os.path.join(report_dir, 'consolidated_report.html')
+        self.create_consolidated_html_report(report_path, all_mushroom_data, consolidated_predictions)
+        
+        rprint(f"[green]Consolidated report generated: {report_path}[/green]")
+        input("\nPress Enter to continue...")
+        
+    def create_html_report(self, filepath, mushroom_name, heatmap, monthly_data, historical_data, seasonal_pred, full_data):
+        """Create enhanced HTML report with monthly totals and predictions."""
+        quality_dist = full_data['quality_grade'].value_counts()
         monthly_totals = monthly_data.copy()
         grand_total = monthly_totals['Total'].sum()
         
-        # Create seasonal prediction section
         month_names = {
             1: 'January', 2: 'February', 3: 'March', 4: 'April', 5: 'May', 6: 'June',
             7: 'July', 8: 'August', 9: 'September', 10: 'October', 11: 'November', 12: 'December'
@@ -653,7 +1066,6 @@ class MushroomObserver:
             </div>
         """
 
-        # Create monthly observations table with quality grades and grand total
         monthly_html = f"""
             <div class="row mt-4">
                 <div class="col-12">
@@ -763,22 +1175,19 @@ class MushroomObserver:
             </div>
 
             <script>
-                // Create monthly observations plot
                 var data = [];
                 var months = {list(monthly_data.index.values)};
                 
-                {'''
-                for (let grade of ['research', 'needs_id', 'casual']) {
-                    if (grade in monthly_data.columns) {
-                        data.push({
+                for (let grade of ['research', 'needs_id', 'casual']) {{
+                    if (grade in monthly_data.columns) {{
+                        data.push({{
                             x: months,
                             y: monthly_data[grade].tolist(),
                             name: grade,
                             type: 'bar'
-                        });
-                    }
-                }
-                '''}
+                        }});
+                    }}
+                }}
 
                 var layout = {{
                     title: 'Monthly Observations by Quality Grade',
@@ -796,73 +1205,70 @@ class MushroomObserver:
         
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(html_content)
-    def update_mushroom_data(self):
-            """Update observation data for all mushrooms, only fetching new data."""
-            if not self.mushrooms:
-                rprint("[yellow]No mushrooms available to update![/yellow]")
-                input("\nPress Enter to continue...")
-                return
 
-            console.clear()
-            rprint("[bold green]🍄 Updating Mushroom Data[/bold green]\n")
-            
-            total_new_observations = 0  # Track total new observations
-            
-            # Create a table for results
-            results_table = Table(
-                title="Update Results",
-                show_header=True,
-                header_style="bold magenta"
+    def update_mushroom_data(self):
+        """Update observation data for all mushrooms, only fetching new data."""
+        if not self.mushrooms:
+            rprint("[yellow]No mushrooms available to update![/yellow]")
+            input("\nPress Enter to continue...")
+            return
+
+        console.clear()
+        rprint("[bold green]🍄 Updating Mushroom Data[/bold green]\n")
+        
+        total_new_observations = 0
+        
+        results_table = Table(
+            title="Update Results",
+            show_header=True,
+            header_style="bold magenta"
+        )
+        results_table.add_column("Mushroom", style="cyan")
+        results_table.add_column("Status", style="green")
+        results_table.add_column("New Observations", justify="right", style="yellow")
+        results_table.add_column("Total Observations", justify="right", style="blue")
+        results_table.add_column("Quality Grades", style="magenta")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            overall_task = progress.add_task(
+                "Updating mushrooms...", 
+                total=len(self.mushrooms)
             )
-            results_table.add_column("Mushroom", style="cyan")
-            results_table.add_column("Status", style="green")
-            results_table.add_column("New Observations", justify="right", style="yellow")
-            results_table.add_column("Total Observations", justify="right", style="blue")
-            results_table.add_column("Quality Grades", style="magenta")
             
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console
-            ) as progress:
-                overall_task = progress.add_task(
-                    "Updating mushrooms...", 
-                    total=len(self.mushrooms)
-                )
+            for name, taxon_id in self.mushrooms.items():
+                progress.update(overall_task, description=f"Checking {name}")
                 
-                for name, taxon_id in self.mushrooms.items():
-                    progress.update(overall_task, description=f"Checking {name}")
+                try:
+                    cached_data = self.load_cached_data(taxon_id)
+                    last_date = None
+                    current_count = len(cached_data) if cached_data else 0
                     
-                    try:
-                        # Get last observation date from cache
-                        cached_data = self.load_cached_data(taxon_id)
-                        last_date = None
-                        current_count = len(cached_data) if cached_data else 0
-                        
+                    if cached_data:
+                        dates = [obs.get('observed_on') for obs in cached_data if obs.get('observed_on')]
+                        if dates:
+                            last_date = max(dates)
+                            self.logger.info(f"Last observation date for {name}: {last_date}")
+                    
+                    new_data = self.fetch_observations_since(taxon_id, name, last_date)
+                    
+                    if new_data:
                         if cached_data:
-                            dates = [obs.get('observed_on') for obs in cached_data if obs.get('observed_on')]
-                            if dates:
-                                last_date = max(dates)
-                        
-                        # Fetch new observations
-                        new_data = self.fetch_observations_since(taxon_id, name, last_date)
+                            existing_ids = {obs['id'] for obs in cached_data}
+                            new_data = [obs for obs in new_data if obs['id'] not in existing_ids]
+                            merged_data = cached_data + new_data
+                        else:
+                            merged_data = new_data
                         
                         if new_data:
-                            if cached_data:
-                                # Remove any duplicates based on observation ID
-                                existing_ids = {obs['id'] for obs in cached_data}
-                                new_data = [obs for obs in new_data if obs['id'] not in existing_ids]
-                                merged_data = cached_data + new_data
-                            else:
-                                merged_data = new_data
-                            
-                            # Save updated data
                             self.save_cached_data(taxon_id, merged_data)
                             new_count = len(new_data)
                             total_new_observations += new_count
                             total_count = len(merged_data)
                             
-                            # Count quality grades in new data
                             quality_counts = {}
                             for obs in new_data:
                                 grade = obs.get('quality_grade', 'unknown')
@@ -871,272 +1277,48 @@ class MushroomObserver:
                             quality_summary = ", ".join(f"{grade}: {count}" for grade, count in quality_counts.items())
                             status = "✓ Updated"
                         else:
+                            status = "✓ No updates"
                             new_count = 0
                             total_count = current_count
-                            status = "✓ No updates"
                             quality_summary = "-"
-                        
-                        results_table.add_row(
-                            name,
-                            status,
-                            str(new_count),
-                            str(total_count),
-                            quality_summary
-                        )
-                        
-                    except Exception as e:
-                        self.logger.error(f"Error updating {name}: {e}")
-                        results_table.add_row(
-                            name,
-                            "[red]✗ Error[/red]",
-                            "-",
-                            str(current_count),
-                            "-"
-                        )
+                    else:
+                        new_count = 0
+                        total_count = current_count
+                        status = "✓ No updates"
+                        quality_summary = "-"
                     
-                    progress.advance(overall_task)
-
-                # Update progress description
-                progress.update(overall_task, description="Update complete!")
-
-            # Show final results
-            console.clear()
-            rprint("[bold green]🍄 Update Complete![/bold green]\n")
-            console.print(results_table)
-            
-            # Show summary
-            rprint(f"\n[bold]Summary:[/bold]")
-            rprint(f"Total mushrooms checked: [cyan]{len(self.mushrooms)}[/cyan]")
-            rprint(f"New observations added: [yellow]{total_new_observations}[/yellow]")
-            rprint(f"Last updated: [blue]{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/blue]")
-            
-            input("\nPress Enter to continue...")
-
-    def generate_consolidated_report(self):
-            """Generate a consolidated report for all mushrooms."""
-            console.clear()
-            if not self.mushrooms:
-                rprint("[yellow]No mushrooms to generate report for![/yellow]")
-                input("\nPress Enter to continue...")
-                return
-
-            rprint("[bold]Generating Consolidated Report[/bold]\n")
-            
-            # Create report directory with timestamp
-            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            report_dir = os.path.join(REPORTS_DIR, f"consolidated_{timestamp}")
-            os.makedirs(report_dir, exist_ok=True)
-
-            all_mushroom_data = {}
-            consolidated_predictions = {}
-
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}")
-            ) as progress:
-                # First pass: collect all data
-                task = progress.add_task("Collecting mushroom data...", total=len(self.mushrooms))
-                
-                for name, taxon_id in self.mushrooms.items():
-                    progress.update(task, description=f"Loading data for {name}")
-                    data = self.fetch_observations(taxon_id, name)
-                    if not data.empty:
-                        all_mushroom_data[name] = data
-                    progress.advance(task)
-
-                # Generate seasonal predictions for all mushrooms
-                consolidated_predictions = self.get_seasonal_predictions(all_mushroom_data)
-
-            if not all_mushroom_data:
-                rprint("[red]No data available for any mushrooms![/red]")
-                input("\nPress Enter to continue...")
-                return
-
-            # Generate consolidated HTML report
-            report_path = os.path.join(report_dir, 'consolidated_report.html')
-            self.create_consolidated_html_report(report_path, all_mushroom_data, consolidated_predictions)
-            
-            rprint(f"[green]Consolidated report generated: {report_path}[/green]")
-            input("\nPress Enter to continue...")
-
-    def create_consolidated_html_report(self, filepath, all_mushroom_data, predictions):
-        """Create consolidated HTML report for all mushrooms."""
-        # Get current date info for seasonal section
-        current_date = datetime.datetime.now()
-        month_names = {
-            1: 'January', 2: 'February', 3: 'March', 4: 'April', 5: 'May', 6: 'June',
-            7: 'July', 8: 'August', 9: 'September', 10: 'October', 11: 'November', 12: 'December'
-        }
-
-        # Create individual mushroom sections
-        mushroom_sections = []
-        for name, data in all_mushroom_data.items():
-            # Generate heatmap for this mushroom
-            m = folium.Map(location=DEFAULT_MAP_CENTER, zoom_start=6)
-            
-            if not data.empty:
-                locations = []
-                for _, row in data.iterrows():
-                    if pd.notnull(row['geojson']):
-                        coords = row['geojson']['coordinates']
-                        locations.append([coords[1], coords[0]])
-                
-                if locations:
-                    HeatMap(locations).add_to(m)
-
-            # Calculate monthly totals for this mushroom
-            monthly_data, historical_data = self.calculate_monthly_totals(data)
-            
-            # Create mushroom section
-            mushroom_section = f"""
-                <div class="mushroom-section mb-5">
-                    <h2>{name}</h2>
-                    <div class="row">
-                        <div class="col-12">
-                            <div class="map-container">
-                                {m._repr_html_()}
-                            </div>
-                        </div>
-                    </div>
+                    results_table.add_row(
+                        name,
+                        status,
+                        str(new_count),
+                        str(total_count),
+                        quality_summary
+                    )
                     
-                    <div class="row mt-3">
-                        <div class="col-12">
-                            <h3>Monthly Observations</h3>
-                            <div class="table-responsive">
-                                {monthly_data.to_html(classes='table table-striped table-hover')}
-                            </div>
-                            <div class="mt-2">
-                                <strong>Total Observations: {len(data):,}</strong>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            """
-            mushroom_sections.append(mushroom_section)
+                except Exception as e:
+                    self.logger.error(f"Error updating {name}: {e}")
+                    results_table.add_row(
+                        name,
+                        "[red]✗ Error[/red]",
+                        "-",
+                        str(current_count),
+                        "-"
+                    )
+                
+                progress.advance(overall_task)
 
-        # Create seasonal prediction section
-        seasonal_sections = []
-        for month_type in ['last_month', 'current_month', 'next_month']:
-            month_predictions = {}
-            for mushroom, pred in predictions.items():
-                if month_type in pred:
-                    month_predictions[mushroom] = pred[month_type]
-            
-            if month_predictions:
-                # Sort mushrooms by average observations for this month
-                sorted_mushrooms = sorted(
-                    month_predictions.items(),
-                    key=lambda x: x[1]['avg'],
-                    reverse=True
-                )
-                
-                prediction_rows = []
-                for mushroom, data in sorted_mushrooms:
-                    prediction_rows.append(f"""
-                        <tr>
-                            <td>{mushroom}</td>
-                            <td>{data['avg']:.1f}</td>
-                            <td>{data['total']}</td>
-                        </tr>
-                    """)
-                
-                month_num = list(month_predictions.values())[0]['month']
-                month_name = month_names[month_num]
-                
-                section = f"""
-                    <div class="col-md-4">
-                        <div class="card">
-                            <div class="card-body">
-                                <h5 class="card-title">{month_name}</h5>
-                                <table class="table table-sm">
-                                    <thead>
-                                        <tr>
-                                            <th>Mushroom</th>
-                                            <th>Avg</th>
-                                            <th>Total</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {''.join(prediction_rows)}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                """
-                seasonal_sections.append(section)
+            progress.update(overall_task, description="Update complete!")
 
-        # Combine everything into final HTML
-        html_content = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Consolidated Mushroom Report</title>
-            <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css">
-            <style>
-                body {{ 
-                    padding: 20px;
-                    background-color: #f5f5f5;
-                }}
-                .container {{ 
-                    max-width: 1200px;
-                    background-color: white;
-                    padding: 30px;
-                    border-radius: 10px;
-                    box-shadow: 0 0 20px rgba(0,0,0,0.1);
-                }}
-                .map-container {{ 
-                    height: 400px;
-                    border: 1px solid #ddd;
-                    border-radius: 5px;
-                    overflow: hidden;
-                }}
-                .mushroom-section {{
-                    border-bottom: 2px solid #eee;
-                    padding-bottom: 30px;
-                }}
-                h1 {{ 
-                    color: #2c3e50;
-                    margin-bottom: 30px;
-                    padding-bottom: 15px;
-                    border-bottom: 2px solid #eee;
-                }}
-                h2 {{ 
-                    color: #2c3e50;
-                    margin: 20px 0;
-                }}
-                .seasonal-predictions {{
-                    margin-top: 40px;
-                    margin-bottom: 40px;
-                }}
-                .table {{ 
-                    margin-bottom: 0;
-                    background-color: white;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>Consolidated Mushroom Report</h1>
-                <p class="lead">Report generated on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                
-                <div class="seasonal-predictions">
-                    <h2>Seasonal Predictions</h2>
-                    <div class="row">
-                        {''.join(seasonal_sections)}
-                    </div>
-                </div>
-
-                <div class="mushroom-sections">
-                    {''.join(mushroom_sections)}
-                </div>
-            </div>
-        </body>
-        </html>
-        """
+        console.clear()
+        rprint("[bold green]🍄 Update Complete![/bold green]\n")
+        console.print(results_table)
         
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(html_content)
+        rprint(f"\n[bold]Summary:[/bold]")
+        rprint(f"Total mushrooms checked: [cyan]{len(self.mushrooms)}[/cyan]")
+        rprint(f"New observations added: [yellow]{total_new_observations}[/yellow]")
+        rprint(f"Last updated: [blue]{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/blue]")
+        
+        input("\nPress Enter to continue...")
 
     def purge_cache(self):
         """Clear all cached observation data."""
@@ -1203,4 +1385,4 @@ def main():
     observer.run()
 
 if __name__ == "__main__":
-    main()            
+    main()
