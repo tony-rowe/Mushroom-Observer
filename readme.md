@@ -198,9 +198,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Data provided by [iNaturalist](https://www.inaturalist.org/)
 - Mapping functionality powered by [Folium](https://python-visualization.github.io/folium/)
 - Terminal interface created with [Rich](https://rich.readthedocs.io/)
-
-## 📫 Contact
-
-Your Name - [@yourtwitter](https://twitter.com/yourtwitter) - email@example.com
-
-P
+- Created using [Claude] (https://claude.ai)
